@@ -21,21 +21,19 @@ import 'notifications_page.dart';
 
 /// ================== UI CONFIG (đúng tên icon trong assets/icon) ==================
 const _kIcon = (
-myInvoices: 'assets/icon/hoadoncuatoi.png',
-reviewPayments: 'assets/icon/duyetphieunop.png',
-approved: 'assets/icon/hoadondaduyet.png',
-notPaid: 'assets/icon/danhsachchuanop.png',
-expenses: 'assets/icon/khoanchi.png',
-generate: 'assets/icon/phathoadon.png',
-members: 'assets/icon/thanhvienlop.png',
-fund: 'assets/icon/taikhoanquy.png',
-clazz: null, // ko có file riêng -> fallback icon
+myInvoices: null,
+reviewPayments: null,
+approved: null,
+notPaid: null,
+expenses: null,
+generate: null,
+members: null,
+fund: null,
+clazz: null,
 );
 
 /// Mini icons “Tài khoản quỹ”
-const List<String> _kFundAccountMiniIcons = [
-  'assets/icon/taikhoanquy.png',
-];
+const List<String> _kFundAccountMiniIcons = [];
 
 /// ====== Model thông báo rất gọn (khớp bảng notifications) ======
 class _Notif {
