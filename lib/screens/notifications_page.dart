@@ -10,136 +10,117 @@ class NotificationsPage extends ConsumerWidget {
   IconData _iconForType(String type) {
     switch (type) {
       case 'income':
-        return Icons.arrow_downward; // thu
+        return Icons.arrow_downward_rounded;
       case 'expense':
-        return Icons.arrow_upward; // chi
-      case 'expense_comment':
-        return Icons.chat_bubble_outline;
+        return Icons.arrow_upward_rounded;
+      case 'invoice':
+        return Icons.receipt_long_rounded;
       default:
-        return Icons.notifications;
+        return Icons.notifications_none_rounded;
     }
+  }
+
+  String _subtitleFor(Map<String, dynamic> item) {
+    final amount = item['amount'];
+    final event = (item['event'] ?? '').toString();
+
+    if (amount is num && amount > 0) {
+      final pretty = amount.toStringAsFixed(0);
+      if (event == 'invoice_generated') return 'Số tiền: $pretty đ';
+      return 'Số tiền: $pretty đ';
+    }
+
+    return (item['title'] ?? '').toString();
   }
 
   String _formatCreatedAt(String raw) {
     if (raw.isEmpty) return '';
     try {
       final dt = DateTime.parse(raw).toLocal();
-      final h = dt.hour.toString().padLeft(2, '0');
-      final m = dt.minute.toString().padLeft(2, '0');
-      final d = dt.day.toString().padLeft(2, '0');
-      final mo = dt.month.toString().padLeft(2, '0');
-      final y = dt.year.toString();
-      return '$h:$m  $d/$mo/$y';
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')} '
+          '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
     } catch (_) {
       return raw;
     }
   }
 
-  int _toInt(dynamic v) {
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    return int.tryParse(v?.toString() ?? '') ?? 0;
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final asyncNotifs = ref.watch(notificationsProvider);
+    final asyncItems = ref.watch(notificationsProvider);
+    final repo = ref.read(fundNotificationRepositoryProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Thông báo'),
+        title: const Text('Các thông báo'),
         actions: [
           IconButton(
             tooltip: 'Đánh dấu tất cả đã đọc',
-            icon: const Icon(Icons.mark_email_read_outlined),
             onPressed: () async {
-              try {
-                final repo = ref.read(fundNotificationRepositoryProvider);
-                await repo.markAllAsRead();
-
-                // reload danh sách
-                ref.invalidate(notificationsProvider);
-                // cho badge chạy lại API getUnreadCount()
-                ref.invalidate(unreadNotificationCountProvider);
-              } catch (e) {
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Lỗi đánh dấu đã đọc: $e')),
-                );
-              }
+              await repo.markAllAsRead();
+              ref.invalidate(notificationsProvider);
+              ref.invalidate(unreadNotificationCountProvider);
             },
+            icon: const Icon(Icons.done_all_rounded),
           ),
         ],
       ),
-      body: asyncNotifs.when(
-        data: (list) {
-          if (list.isEmpty) {
-            return const Center(
-              child: Text('Chưa có thông báo nào'),
-            );
+      body: asyncItems.when(
+        data: (items) {
+          if (items.isEmpty) {
+            return const Center(child: Text('Chưa có thông báo nào'));
           }
 
-          return ListView.separated(
-            itemCount: list.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final n = list[index];
-
-              final id = _toInt(n['id']);
-              final isRead = (n['is_read'] as bool?) ?? false;
-              final type = (n['type'] as String?) ?? '';
-              final title = (n['title'] as String?) ?? '';
-              final message = (n['message'] as String?) ?? '';
-              final createdAtRaw = (n['created_at'] as String?) ?? '';
-              final createdAtText = _formatCreatedAt(createdAtRaw);
-
-              return ListTile(
-                leading: Icon(_iconForType(type)),
-                title: Text(
-                  title,
-                  style: TextStyle(
-                    fontWeight: isRead ? FontWeight.normal : FontWeight.bold,
-                  ),
-                ),
-                subtitle: Text(
-                  message.isNotEmpty ? message : createdAtText,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: isRead
-                    ? null
-                    : const Icon(
-                  Icons.circle,
-                  size: 10,
-                ),
-                onTap: () async {
-                  try {
-                    final repo = ref.read(fundNotificationRepositoryProvider);
-                    // đánh dấu 1 thông báo đã đọc
-                    await repo.markAsRead(id);
-
-                    // reload danh sách
-                    ref.invalidate(notificationsProvider);
-                    // và cho badge chạy lại getUnreadCount()
-                    ref.invalidate(unreadNotificationCountProvider);
-
-                    // TODO: sau này muốn điều hướng chi tiết thì xử lý ở đây
-                    // dựa vào n['type'] / n['data']
-                  } catch (e) {
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Lỗi cập nhật thông báo: $e')),
-                    );
-                  }
-                },
-              );
+          return RefreshIndicator(
+            onRefresh: () async {
+              ref.invalidate(notificationsProvider);
+              ref.invalidate(unreadNotificationCountProvider);
             },
+            child: ListView.separated(
+              itemCount: items.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final item = items[index];
+                final id = item['id'] as int;
+                final isRead = item['read'] == true;
+                final title = (item['title'] ?? '').toString();
+                final createdAt = _formatCreatedAt((item['created_at'] ?? '').toString());
+
+                return ListTile(
+                  leading: CircleAvatar(
+                    child: Icon(_iconForType((item['type'] ?? '').toString())),
+                  ),
+                  title: Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: isRead ? FontWeight.w500 : FontWeight.w700,
+                    ),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 4),
+                      Text(_subtitleFor(item)),
+                      if (createdAt.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(createdAt),
+                      ],
+                    ],
+                  ),
+                  trailing: !isRead
+                      ? const Icon(Icons.circle, size: 10, color: Colors.red)
+                      : null,
+                  onTap: () async {
+                    await repo.markAsRead(id);
+                    ref.invalidate(notificationsProvider);
+                    ref.invalidate(unreadNotificationCountProvider);
+                  },
+                );
+              },
+            ),
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, st) => Center(
-          child: Text('Lỗi tải thông báo: $e'),
-        ),
+        error: (e, _) => Center(child: Text('Lỗi tải thông báo: $e')),
       ),
     );
   }

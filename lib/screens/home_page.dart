@@ -9,8 +9,7 @@ import '../repos/auth_repository.dart';
 import '../repos/class_repository.dart';
 import '../repos/fund_account_repository.dart';
 import '../services/session.dart';
-import '../services/network.dart';        // prettyDioError
-import '../services/dio_provider.dart';   // dioProvider
+import '../services/network.dart'; // prettyDioError
 import '../providers/unread_notification_provider.dart';
 
 import 'profile/profile_page.dart';
@@ -18,6 +17,7 @@ import 'class_list_page.dart';
 import 'class_members_page.dart';
 import 'profile/fund_account_sheet.dart';
 import '../providers/fund_notification_providers.dart';
+import 'notifications_page.dart';
 
 /// ================== UI CONFIG (đúng tên icon trong assets/icon) ==================
 const _kIcon = (
@@ -37,14 +37,13 @@ const List<String> _kFundAccountMiniIcons = [
   'assets/icon/taikhoanquy.png',
 ];
 
-/// ====== Model thông báo rất gọn ======
 /// ====== Model thông báo rất gọn (khớp bảng notifications) ======
 class _Notif {
   final int id;
-  final String type;   // due_reminder | income | expense | expense_comment...
+  final String type;
   final String title;
-  final String body;   // nội dung chi tiết (cột body)
-  final int amount;    // lấy từ cột amount nếu có, hoặc parse từ body
+  final String body;
+  final int amount;
   final DateTime createdAt;
   bool read;
 
@@ -59,10 +58,9 @@ class _Notif {
   });
 
   factory _Notif.fromJson(Map<String, dynamic> j) {
-    int amount = _toInt(j['amount']); // nếu bảng không có amount -> sẽ là 0
+    int amount = _toInt(j['amount']);
 
-    // Nếu amount = 0 thì thử parse trong body kiểu: "Số tiền: 100000 - Hạn: ..."
-    final body = (j['body'] ?? '').toString();
+    final body = (j['body'] ?? j['message'] ?? '').toString();
     if (amount == 0 && body.isNotEmpty) {
       final m = RegExp(r'Số tiền:\s*([0-9]+)').firstMatch(body);
       if (m != null) {
@@ -103,9 +101,9 @@ class _Notif {
   }
 }
 
-
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
+
   @override
   ConsumerState<HomePage> createState() => _HomePageState();
 }
@@ -117,16 +115,15 @@ class _HomePageState extends ConsumerState<HomePage> {
   String? _className;
   num? _balance;
 
-  // ====== state thông báo
   List<_Notif> _notifs = const [];
-  bool get _hasUnread => _notifs.any((n) => !n.read);
 
   @override
   void initState() {
     super.initState();
     _loadMe().then((_) async {
       await _loadCurrentClassInfo();
-      await _loadNotifications(); // tải thông báo
+      await _loadNotifications();
+      ref.invalidate(unreadNotificationCountProvider);
     });
   }
 
@@ -221,8 +218,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     } catch (_) {}
   }
 
-  /// ====== LOAD thông báo thu/chi
-  /// ====== LOAD thông báo (dùng FundNotificationRepository) ======
   Future<void> _loadNotifications() async {
     try {
       final repo = ref.read(fundNotificationRepositoryProvider);
@@ -234,27 +229,25 @@ class _HomePageState extends ConsumerState<HomePage> {
           .toList();
 
       setState(() => _notifs = items);
-      // _hasUnread dùng _notifs để hiện chấm đỏ ở icon chuông
-    } catch (_) {
-      // Có thể log hoặc hiển thị SnackBar nếu muốn
-    }
+    } catch (_) {}
   }
 
+  Future<void> _refreshAll() async {
+    await _loadMe();
+    await _loadCurrentClassInfo();
+    await _loadNotifications();
+    ref.invalidate(unreadNotificationCountProvider);
+    ref.invalidate(notificationsProvider);
+  }
 
-  /// Đánh dấu tất cả thông báo đang hiển thị là đã đọc (trên client)
-  void _markAllRead() {
+  void _markAllReadLocal() {
     setState(() {
       for (final n in _notifs) {
         n.read = true;
       }
     });
-
-    // Đồng bộ badge: để FutureProvider tự gọi lại API getUnreadCount()
     ref.invalidate(unreadNotificationCountProvider);
-
-    // (Tuỳ ý) nếu BE có API mark-all-read thì gọi thêm:
-    // final dio = ref.read(dioProvider);
-    // dio.post('/notifications/read-all');
+    ref.invalidate(notificationsProvider);
   }
 
   void _openNotificationsSheet() {
@@ -266,12 +259,23 @@ class _HomePageState extends ConsumerState<HomePage> {
       builder: (_) => _NotificationsSheet(
         items: _notifs,
         onMarkAllRead: () {
-          _markAllRead();
+          _markAllReadLocal();
           Navigator.pop(context);
         },
         onOpenLedger: () {
           Navigator.pop(context);
           Navigator.of(context).pushNamed('/reports/ledger');
+        },
+        onOpenFullPage: () async {
+          Navigator.pop(context);
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const NotificationsPage(),
+            ),
+          );
+          await _loadNotifications();
+          ref.invalidate(unreadNotificationCountProvider);
+          ref.invalidate(notificationsProvider);
         },
       ),
     );
@@ -283,6 +287,12 @@ class _HomePageState extends ConsumerState<HomePage> {
     final displayName = s.name ?? (me?['name'] as String?) ?? '';
     final isTreasurer = (s.role == 'treasurer' || s.role == 'owner');
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final unreadAsync = ref.watch(unreadNotificationCountProvider);
+    final unreadCount = unreadAsync.maybeWhen(
+      data: (value) => value,
+      orElse: () => 0,
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -303,8 +313,10 @@ class _HomePageState extends ConsumerState<HomePage> {
         appBar: AppBar(
           scrolledUnderElevation: 0,
           backgroundColor: Colors.transparent,
-          title: const Text('QUỸ LỚP',
-              style: TextStyle(fontWeight: FontWeight.w800)),
+          title: const Text(
+            'QUỸ LỚP',
+            style: TextStyle(fontWeight: FontWeight.w800),
+          ),
           actions: [
             IconButton(
               tooltip: 'Sổ quỹ',
@@ -314,15 +326,10 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
             IconButton(
               tooltip: 'Làm mới',
-              onPressed: () async {
-                await _loadMe();
-                await _loadCurrentClassInfo();
-                await _loadNotifications();
-              },
+              onPressed: _refreshAll,
               icon: const Icon(Icons.refresh),
             ),
 
-            // 🔔 Chuông thông báo (thay menu 3 chấm)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: Stack(
@@ -333,16 +340,38 @@ class _HomePageState extends ConsumerState<HomePage> {
                     onPressed: _openNotificationsSheet,
                     icon: const Icon(Icons.notifications_none_rounded),
                   ),
-                  if (_hasUnread)
+                  if (unreadCount > 0)
                     Positioned(
-                      right: 8,
-                      top: 10,
+                      right: 2,
+                      top: 6,
                       child: Container(
-                        width: 10,
-                        height: 10,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 18,
+                          minHeight: 18,
+                        ),
                         decoration: BoxDecoration(
-                          color: Colors.redAccent,
+                          color: Colors.red,
                           borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: Theme.of(context).scaffoldBackgroundColor,
+                            width: 1.2,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            unreadCount > 99 ? '99+' : '$unreadCount',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              height: 1,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -352,19 +381,17 @@ class _HomePageState extends ConsumerState<HomePage> {
           ],
         ),
         body: RefreshIndicator(
-          onRefresh: () async {
-            await _loadMe();
-            await _loadCurrentClassInfo();
-            await _loadNotifications();
-          },
+          onRefresh: _refreshAll,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
             children: [
               if (err != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child:
-                  Text(err!, style: const TextStyle(color: Colors.red)),
+                  child: Text(
+                    err!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
                 ),
 
               _GreetingCardModern(
@@ -382,14 +409,14 @@ class _HomePageState extends ConsumerState<HomePage> {
 
               if (s.classId == null)
                 _EmptyClassCardModern(
-                    onJoin: () => Navigator.of(context).pushNamed('/join'))
+                  onJoin: () => Navigator.of(context).pushNamed('/join'),
+                )
               else
                 _CurrentClassCardModern(
                   classId: s.classId!,
                   className: _className ?? 'Lớp đã tham gia',
                   balance: _balance,
-                  showFundShortcuts:
-                  isTreasurer, // Owner/Thủ quỹ mới có icon mini
+                  showFundShortcuts: isTreasurer,
                   fundMiniIcons: _kFundAccountMiniIcons,
                   onPickClass: () async {
                     final picked =
@@ -399,16 +426,16 @@ class _HomePageState extends ConsumerState<HomePage> {
                       ),
                     );
                     if (picked != null) {
-                      setState(() =>
-                      _className = (picked['name'] ?? '').toString());
+                      setState(
+                            () => _className = (picked['name'] ?? '').toString(),
+                      );
                       await _loadCurrentClassInfo();
+                      ref.invalidate(unreadNotificationCountProvider);
                     }
                   },
-                  // luôn hiển thị nút thành viên
                   onOpenMembers: () => Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) =>
-                          ClassMembersPage(classId: s.classId!),
+                      builder: (_) => ClassMembersPage(classId: s.classId!),
                     ),
                   ),
                 ),
@@ -417,7 +444,6 @@ class _HomePageState extends ConsumerState<HomePage> {
               const _SectionTitle(title: 'Tính năng nhanh'),
               const SizedBox(height: 10),
 
-              // Lưới Ô VUÔNG (icon to + text dưới)
               _ActionsSquareGrid(
                 children: [
                   _ActionSquareCard(
@@ -425,8 +451,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     fallbackIcon: Icons.receipt_long,
                     title: 'Hóa đơn của tôi',
                     subtitle: 'Theo dõi & thanh toán',
-                    onTap: () =>
-                        Navigator.of(context).pushNamed('/invoices'),
+                    onTap: () => Navigator.of(context).pushNamed('/invoices'),
                   ),
                   if (isTreasurer)
                     _ActionSquareCard(
@@ -434,16 +459,16 @@ class _HomePageState extends ConsumerState<HomePage> {
                       fallbackIcon: Icons.verified,
                       title: 'Duyệt phiếu nộp',
                       subtitle: 'Xử lý chứng từ',
-                      onTap: () => Navigator.of(context)
-                          .pushNamed('/payments/review'),
+                      onTap: () =>
+                          Navigator.of(context).pushNamed('/payments/review'),
                     ),
                   _ActionSquareCard(
                     assetIcon: _kIcon.approved,
                     fallbackIcon: Icons.fact_check,
                     title: 'Hoá đơn đã duyệt',
                     subtitle: 'Danh sách đã thanh toán',
-                    onTap: () => Navigator.of(context)
-                        .pushNamed('/payments/approved'),
+                    onTap: () =>
+                        Navigator.of(context).pushNamed('/payments/approved'),
                   ),
                   if (isTreasurer)
                     _ActionSquareCard(
@@ -451,16 +476,14 @@ class _HomePageState extends ConsumerState<HomePage> {
                       fallbackIcon: Icons.fact_check,
                       title: 'Danh sách chưa nộp',
                       subtitle: 'Thành viên chưa nộp',
-                      onTap: () =>
-                          Navigator.of(context).pushNamed('/reports/fee'),
+                      onTap: () => Navigator.of(context).pushNamed('/reports/fee'),
                     ),
                   _ActionSquareCard(
                     assetIcon: _kIcon.expenses,
                     fallbackIcon: Icons.payments_outlined,
                     title: 'Khoản chi',
                     subtitle: 'Ghi & xem chi',
-                    onTap: () =>
-                        Navigator.of(context).pushNamed('/expenses'),
+                    onTap: () => Navigator.of(context).pushNamed('/expenses'),
                   ),
                   if (isTreasurer)
                     _ActionSquareCard(
@@ -468,8 +491,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                       fallbackIcon: Icons.upload_file,
                       title: 'Phát hóa đơn',
                       subtitle: 'Tạo kỳ thu nhanh',
-                      onTap: () => Navigator.of(context)
-                          .pushNamed('/fee-cycles/generate'),
+                      onTap: () =>
+                          Navigator.of(context).pushNamed('/fee-cycles/generate'),
                     ),
                 ],
               ),
@@ -486,10 +509,13 @@ class _NotificationsSheet extends StatelessWidget {
   final List<_Notif> items;
   final VoidCallback onMarkAllRead;
   final VoidCallback onOpenLedger;
+  final VoidCallback onOpenFullPage;
+
   const _NotificationsSheet({
     required this.items,
     required this.onMarkAllRead,
     required this.onOpenLedger,
+    required this.onOpenFullPage,
   });
 
   String _fmtVn(int v) =>
@@ -506,11 +532,13 @@ class _NotificationsSheet extends StatelessWidget {
           children: [
             Row(
               children: [
-                Text('Thông báo thu/chi',
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w800)),
+                Text(
+                  'Thông báo thu/chi',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                ),
                 const Spacer(),
                 TextButton.icon(
                   onPressed: onOpenLedger,
@@ -533,17 +561,23 @@ class _NotificationsSheet extends StatelessWidget {
                     Divider(height: 1, color: cs.outlineVariant),
                 itemBuilder: (ctx, i) {
                   final n = items[i];
-                  final isIncome = n.type == 'income' || n.type == 'due_reminder';
-                  final icon = isIncome ? Icons.trending_up : Icons.trending_down;
+                  final isIncome =
+                      n.type == 'income' || n.type == 'due_reminder';
+                  final icon = isIncome
+                      ? Icons.trending_up
+                      : Icons.trending_down;
                   final color = isIncome ? Colors.green : Colors.red;
+
                   return ListTile(
                     leading: CircleAvatar(
                       backgroundColor: cs.primaryContainer,
                       child: Icon(icon, color: color),
                     ),
-                    title: Text(n.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis),
+                    title: Text(
+                      n.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     subtitle: Text(
                       n.body.isNotEmpty
                           ? n.body
@@ -556,9 +590,10 @@ class _NotificationsSheet extends StatelessWidget {
                           .bodySmall
                           ?.copyWith(color: cs.outline),
                     ),
-
                     trailing: Text(
-                      (isIncome ? '+ ' : '- ') + _fmtVn(n.amount),
+                      n.amount > 0
+                          ? ((isIncome ? '+ ' : '- ') + _fmtVn(n.amount))
+                          : '',
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         color: color,
@@ -580,12 +615,21 @@ class _NotificationsSheet extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: FilledButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Đóng'),
+                  child: FilledButton.icon(
+                    onPressed: onOpenFullPage,
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('Xem tất cả'),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Đóng'),
+              ),
             ),
           ],
         ),
@@ -601,6 +645,7 @@ class _GlassCard extends StatelessWidget {
   final EdgeInsetsGeometry padding;
   final double borderRadius;
   final Color? color;
+
   const _GlassCard({
     required this.child,
     this.padding = const EdgeInsets.all(16),
@@ -620,10 +665,8 @@ class _GlassCard extends StatelessWidget {
           decoration: BoxDecoration(
             color: base,
             border: Border.all(
-              color: Theme.of(context)
-                  .colorScheme
-                  .outlineVariant
-                  .withOpacity(.25),
+              color:
+              Theme.of(context).colorScheme.outlineVariant.withOpacity(.25),
             ),
             borderRadius: BorderRadius.circular(borderRadius),
             boxShadow: [
@@ -646,6 +689,7 @@ class _GreetingCardModern extends StatelessWidget {
   final String email;
   final String role;
   final VoidCallback? onTap;
+
   const _GreetingCardModern({
     required this.name,
     required this.email,
@@ -669,8 +713,7 @@ class _GreetingCardModern extends StatelessWidget {
           children: [
             CircleAvatar(
               radius: 26,
-              backgroundColor:
-              Theme.of(context).colorScheme.primaryContainer,
+              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
               child: Text(
                 (name.isNotEmpty ? name[0] : '?').toUpperCase(),
                 style: const TextStyle(fontWeight: FontWeight.w800),
@@ -681,18 +724,17 @@ class _GreetingCardModern extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Xin chào, $name',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700)),
+                  Text(
+                    'Xin chào, $name',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 2),
                   Text(
                     email,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.outline,
                     ),
                   ),
@@ -700,8 +742,7 @@ class _GreetingCardModern extends StatelessWidget {
               ),
             ),
             Container(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.primaryContainer,
                 borderRadius: BorderRadius.circular(999),
@@ -720,6 +761,7 @@ class _GreetingCardModern extends StatelessWidget {
 
 class _EmptyClassCardModern extends StatelessWidget {
   final VoidCallback onJoin;
+
   const _EmptyClassCardModern({required this.onJoin});
 
   @override
@@ -728,18 +770,17 @@ class _EmptyClassCardModern extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Bạn chưa tham gia lớp nào',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            'Bạn chưa tham gia lớp nào',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 6),
           Text(
             'Nhấn “Tham gia bằng mã” để vào lớp.',
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.outline,
             ),
           ),
@@ -777,7 +818,9 @@ class _CurrentClassCardModern extends StatelessWidget {
   String _formatVn(num v) {
     final s = v.toStringAsFixed(0);
     return s.replaceAllMapped(
-        RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]}.');
+      RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
+          (m) => '${m[1]}.',
+    );
   }
 
   @override
@@ -801,26 +844,29 @@ class _CurrentClassCardModern extends StatelessWidget {
           Row(
             children: [
               _AssetIconBox.square(
-                  asset: _kIcon.clazz, fallback: Icons.class_, size: 44),
+                asset: _kIcon.clazz,
+                fallback: Icons.class_,
+                size: 44,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(className,
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700)),
+                    Text(
+                      className,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
                     const SizedBox(height: 2),
-                    Text('Mã lớp: $classId',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(
-                          color:
-                          Theme.of(context).colorScheme.outline,
-                        )),
+                    Text(
+                      'Mã lớp: $classId',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -846,8 +892,10 @@ class _CurrentClassCardModern extends StatelessWidget {
                 const Icon(Icons.savings_outlined),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text('Số dư hiện tại: $balanceText',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  child: Text(
+                    'Số dư hiện tại: $balanceText',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
                 IconButton(
                   tooltip: 'Thành viên lớp',
@@ -883,7 +931,12 @@ class _MiniCircleIcon extends StatelessWidget {
   final String asset;
   final VoidCallback? onTap;
   final String? tooltip;
-  const _MiniCircleIcon({required this.asset, this.onTap, this.tooltip});
+
+  const _MiniCircleIcon({
+    required this.asset,
+    this.onTap,
+    this.tooltip,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -892,7 +945,10 @@ class _MiniCircleIcon extends StatelessWidget {
       radius: 20,
       backgroundColor: bg,
       child: _SafeAssetIcon(
-          asset: asset, size: 22, fallback: Icons.account_balance),
+        asset: asset,
+        size: 22,
+        fallback: Icons.account_balance,
+      ),
     );
     final ink = Material(
       type: MaterialType.transparency,
@@ -908,21 +964,26 @@ class _MiniCircleIcon extends StatelessWidget {
 
 class _SectionTitle extends StatelessWidget {
   final String title;
+
   const _SectionTitle({required this.title});
+
   @override
   Widget build(BuildContext context) {
-    return Text(title,
-        style: Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800));
+    return Text(
+      title,
+      style: Theme.of(context)
+          .textTheme
+          .titleLarge
+          ?.copyWith(fontWeight: FontWeight.w800),
+    );
   }
 }
 
-/// ===== LƯỚI Ô VUÔNG (icon to + text phía dưới)
 class _ActionsSquareGrid extends StatelessWidget {
   final List<Widget> children;
+
   const _ActionsSquareGrid({required this.children});
+
   @override
   Widget build(BuildContext context) {
     return GridView(
@@ -930,7 +991,7 @@ class _ActionsSquareGrid extends StatelessWidget {
         crossAxisCount: 2,
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
-        mainAxisExtent: 162, // chiều cao lớn, không mất chữ
+        mainAxisExtent: 162,
       ),
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
@@ -974,7 +1035,10 @@ class _ActionSquareCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(18),
               ),
               child: _SafeAssetIcon(
-                  asset: assetIcon, size: 40, fallback: fallbackIcon),
+                asset: assetIcon,
+                size: 40,
+                fallback: fallbackIcon,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
@@ -1026,14 +1090,24 @@ class _AssetIconBox extends StatelessWidget {
     required IconData fallback,
     double size = 44,
   }) =>
-      _AssetIconBox._(asset: asset, fallback: fallback, size: size, radius: 14);
+      _AssetIconBox._(
+        asset: asset,
+        fallback: fallback,
+        size: size,
+        radius: 14,
+      );
 
   factory _AssetIconBox.square({
     required String? asset,
     required IconData fallback,
     double size = 44,
   }) =>
-      _AssetIconBox._(asset: asset, fallback: fallback, size: size, radius: 12);
+      _AssetIconBox._(
+        asset: asset,
+        fallback: fallback,
+        size: size,
+        radius: 12,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -1059,6 +1133,7 @@ class _SafeAssetIcon extends StatelessWidget {
   final String? asset;
   final IconData fallback;
   final double size;
+
   const _SafeAssetIcon({
     required this.asset,
     required this.fallback,
