@@ -81,21 +81,23 @@ class NotificationsPage extends ConsumerWidget {
         return dueDate.isNotEmpty
             ? 'Đã quá hạn từ: $dueDate'
             : 'Hóa đơn đã quá hạn thanh toán';
+      case 'generated':
+        return 'Kỳ thu đã được phát hành hóa đơn';
       case 'created':
         return 'Có khoản chi mới trong lớp';
       case 'commented':
         return 'Có bình luận mới ở khoản chi';
       default:
-        return createdAtText;
+        return createdAtText.isNotEmpty ? createdAtText : 'Nhấn để xem chi tiết';
     }
   }
 
   Future<void> _openByNotification(
       BuildContext context,
-      Map<String, dynamic> n,
+      Map<String, dynamic> item,
       ) async {
-    final type = (n['type'] as String?) ?? '';
-    final data = _asMap(n['data']);
+    final type = (item['type'] as String?) ?? '';
+    final data = _asMap(item['data']);
     final event = (data['event'] as String?) ?? '';
 
     if (type == 'income') {
@@ -125,11 +127,27 @@ class NotificationsPage extends ConsumerWidget {
 
     if (type == 'invoice') {
       final invoiceId = _toInt(data['invoice_id']);
+      final classId = _toInt(data['class_id']);
+      final feeCycleId = _toInt(data['fee_cycle_id']);
+
       if (invoiceId > 0) {
         await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => InvoiceDetailPage(invoiceId: invoiceId),
+          ),
+        );
+        return;
+      }
+
+      if (event == 'generated' && classId > 0) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ExpensesPage(
+              classId: classId,
+              feeCycleId: feeCycleId > 0 ? feeCycleId : null,
+            ),
           ),
         );
         return;
@@ -150,6 +168,7 @@ class NotificationsPage extends ConsumerWidget {
             ),
           ),
         );
+        return;
       }
     }
   }
@@ -233,8 +252,7 @@ class NotificationsPage extends ConsumerWidget {
                 title: Text(
                   title,
                   style: TextStyle(
-                    fontWeight:
-                    isRead ? FontWeight.normal : FontWeight.bold,
+                    fontWeight: isRead ? FontWeight.normal : FontWeight.bold,
                   ),
                 ),
                 subtitle: Text(
@@ -242,9 +260,7 @@ class NotificationsPage extends ConsumerWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
-                trailing: isRead
-                    ? null
-                    : const Icon(Icons.circle, size: 10),
+                trailing: isRead ? null : const Icon(Icons.circle, size: 10),
                 onTap: () => _handleTap(context, ref, n),
               );
             },
